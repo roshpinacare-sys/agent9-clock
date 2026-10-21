@@ -1,0 +1,44 @@
+name: agent9-clock
+
+# The third clock. Lives in a DEDICATED repo on purpose: Domain carries 12+ cron
+# workflows on one scheduler queue and GitHub measurably skips hours of them
+# (main :09 and watchdog :41 both silent 2h+ while dispatch runs always worked).
+# One cron in its own repo = the best-odds independent heartbeat.
+# Every 15 minutes: measure the Domain bake age; if genuinely stale (confirmed
+# against the authoritative commits API, not raw CDN), dispatch the bake workflow.
+# Threshold 25min << watchdog 90min << the measured 2h+ silences.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      stale_min:
+        description: "override staleness threshold in minutes (for live proof)"
+        required: false
+        default: "25"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent9-clock
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: checkout the truth machine (canonical script)
+        uses: actions/checkout@v4
+        with:
+          repository: roshpinacare-sys/Domain
+          ref: main
+          persist-credentials: false
+
+      - name: tick once (measure -> confirm -> heal if stale)
+        env:
+          GH_PAT: ${{ secrets.AGENT9_CLOCK_PAT }}
+          AGENT9_STALE_MIN: ${{ github.event.inputs.stale_min || '25' }}
+        run: node scripts/agent9-heartbeat.cjs --once
