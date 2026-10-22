@@ -30,7 +30,9 @@ on:
     types: [agent9-tick]
 
 permissions:
-  contents: read
+  # t55l bug-b: POST /repos/{repo}/dispatches requires Contents:write on the
+  # GITHUB_TOKEN (artery-pacer has exactly this pair) — actions:write alone 403s.
+  contents: write
   actions: write
 
 concurrency:
