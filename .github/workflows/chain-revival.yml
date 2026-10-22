@@ -1,0 +1,63 @@
+# agent-9/t55p — GitHub-side sovereign reviver for the agent9 self-chaining clock.
+#
+# GAP MEASURED (2026-10-22): the chain revives today from three sources —
+# cron schedules (measurably SKIPPED for hours on crowded repos, t55l),
+# owner manual dispatch, and the LOCAL daemon (needs the sandbox alive).
+# If the chain dies while the sandbox is down AND the scheduler skips,
+# nothing revives it for hours. This workflow closes the gap: it runs on
+# GitHub infrastructure, measures the chain, and dispatches ONE tick iff
+# the chain is measurably dead — no dependence on any sandbox or owner.
+#
+# SAFETY (no floods / no double-chain — the owner's explicit constraint):
+# - dead := live(queued/in_progress)==0 AND (last conclusion==failure OR quiet>20min)
+#   (chain cadence is measured ~13-14min, so quiet<=20min with a healthy last
+#   beat means ALIVE — same thresholds as the local daemon's chainMeasure)
+# - the dispatched run goes live immediately; the next revival measures live>0
+#   and takes no action — self-limiting by construction
+# - the ONE-CHAIN law inside clock.yml absorbs any racing duplicate dispatch
+# - this workflow's own concurrency group serializes revival checks
+# - cron every 20min IS the rate limit; a healthy chain costs 2 API reads/20min
+
+name: chain-revival
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chain-revival
+  cancel-in-progress: false
+
+jobs:
+  revive-if-dead:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: measure chain; dispatch one tick iff dead
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          DATA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${REPO}/actions/runs?per_page=8")
+          LIVE=$(echo "$DATA" | jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length')
+          LAST_AT=$(echo "$DATA" | jq -r '.workflow_runs[0].created_at // "1970-01-01T00:00:00Z"')
+          LAST_CONC=$(echo "$DATA" | jq -r '.workflow_runs[0].conclusion // "null"')
+          QUIET_MIN=$(( ( $(date -u +%s) - $(date -u -d "$LAST_AT" +%s) ) / 60 ))
+          echo "measured: live=$LIVE last_conclusion=$LAST_CONC quiet_min=$QUIET_MIN"
+          if [ "$LIVE" -gt 0 ]; then echo "CHAIN-ALIVE: $LIVE live run(s) — no action"; exit 0; fi
+          if [ "$LAST_CONC" != "failure" ] && [ "$QUIET_MIN" -le 20 ]; then
+            echo "CHAIN-ALIVE: last beat healthy $QUIET_MIN min ago — no action"; exit 0; fi
+          echo "CHAIN-DEAD (conclusion=$LAST_CONC quiet=$QUIET_MIN min) — dispatching one revival tick"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${REPO}/dispatches \
+            -d '{"event_type":"agent9-tick","client_payload":{"from":"github-chain-revival"}}')
+          echo "dispatch http=$code"
+          [ "$code" = "204" ] || { echo "revival dispatch failed"; exit 1; }
