@@ -9,6 +9,11 @@
 # the chain is measurably dead — no dependence on any sandbox or owner.
 #
 # SAFETY (no floods / no double-chain — the owner's explicit constraint):
+# - dead := among AGENT9-CLOCK RUNS ONLY (revival runs are excluded from the
+#   measure — t55p bug-a measured live: the revival run counts ITSELF as a
+#   live sibling while in-flight, which would make the dead branch
+#   unreachable; filtering .name == "agent9-clock" fixes both the live count
+#   and the last-beat reading)
 # - dead := live(queued/in_progress)==0 AND (last conclusion==failure OR quiet>20min)
 #   (chain cadence is measured ~13-14min, so quiet<=20min with a healthy last
 #   beat means ALIVE — same thresholds as the local daemon's chainMeasure)
@@ -44,11 +49,16 @@ jobs:
         run: |
           set -e
           DATA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/${REPO}/actions/runs?per_page=8")
-          LIVE=$(echo "$DATA" | jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | length')
-          LAST_AT=$(echo "$DATA" | jq -r '.workflow_runs[0].created_at // "1970-01-01T00:00:00Z"')
-          LAST_CONC=$(echo "$DATA" | jq -r '.workflow_runs[0].conclusion // "null"')
-          QUIET_MIN=$(( ( $(date -u +%s) - $(date -u -d "$LAST_AT" +%s) ) / 60 ))
+            "https://api.github.com/repos/${REPO}/actions/runs?per_page=15")
+          TICKS=$(echo "$DATA" | jq -c '[.workflow_runs[] | select(.name == "agent9-clock")]')
+          LIVE=$(echo "$TICKS" | jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+          LAST_AT=$(echo "$TICKS" | jq -r '.[0].created_at // empty')
+          LAST_CONC=$(echo "$TICKS" | jq -r '.[0].conclusion // "null"')
+          if [ -z "$LAST_AT" ]; then
+            QUIET_MIN=9999
+          else
+            QUIET_MIN=$(( ( $(date -u +%s) - $(date -u -d "$LAST_AT" +%s) ) / 60 ))
+          fi
           echo "measured: live=$LIVE last_conclusion=$LAST_CONC quiet_min=$QUIET_MIN"
           if [ "$LIVE" -gt 0 ]; then echo "CHAIN-ALIVE: $LIVE live run(s) — no action"; exit 0; fi
           if [ "$LAST_CONC" != "failure" ] && [ "$QUIET_MIN" -le 20 ]; then
