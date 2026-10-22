@@ -3,23 +3,35 @@ name: agent9-clock
 # The third clock. Lives in a DEDICATED repo on purpose: Domain carries 12+ cron
 # workflows on one scheduler queue and GitHub measurably skips hours of them
 # (main :09 and watchdog :41 both silent 2h+ while dispatch runs always worked).
-# One cron in its own repo = the best-odds independent heartbeat.
-# Every 15 minutes: measure the Domain bake age; if genuinely stale (confirmed
-# against the authoritative commits API, not raw CDN), dispatch the bake workflow.
 # Threshold 25min << watchdog 90min << the measured 2h+ silences.
+#
+# t55l — SELF-CHAINING (the artery-pacer pattern, t14, proven in Autonomy):
+# GitHub's scheduler measurably skips */15 slots (only ONE schedule fire in the
+# clock's first ~4h — 00:58Z). The dispatch path is measured 100% reliable.
+# So the clock now chains itself: a healthy tick sleeps ~13min and repository_
+# dispatches the next tick — the cadence no longer depends on the scheduler.
+# The schedule stays as bonus + reviver (only a healthy beat begets a successor;
+# a failed beat stops the chain LOUDLY — cron + manual dispatch revive it).
+# ONE-CHAIN LAW: before chaining, a run checks for live (queued/running)
+# siblings and lets THEM chain — schedule fires can never multiply chains.
+# Repos are PUBLIC → Actions minutes free → the chain costs nothing.
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/15 * * * *"          # bonus + reviver (flaky scheduler)
+    - cron: "12,27,42,57 * * * *"   # extra revival lottery slots (skipped = free)
   workflow_dispatch:
     inputs:
       stale_min:
         description: "override staleness threshold in minutes (for live proof)"
         required: false
         default: "25"
+  repository_dispatch:
+    types: [agent9-tick]
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: agent9-clock
@@ -28,7 +40,7 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: checkout the truth machine (canonical script)
         uses: actions/checkout@v4
@@ -42,3 +54,33 @@ jobs:
           GH_PAT: ${{ secrets.AGENT9_CLOCK_PAT }}
           AGENT9_STALE_MIN: ${{ github.event.inputs.stale_min || '25' }}
         run: node scripts/agent9-heartbeat.cjs --once
+
+      - name: chain-next (the heartbeat that ignores the scheduler)
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # artery-pacer proven law: only a healthy beat begets a successor.
+          # A failed beat stops the chain here LOUDLY — cron + manual dispatch
+          # are the revivers (no runaway loops on defects).
+          # ONE-CHAIN LAW: if a live sibling (queued/running) exists — e.g. a
+          # scheduled revival — let IT chain. Schedule fires can never multiply
+          # the chain; the invariant "exactly one live chain" self-corrects.
+          LIVE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=8" \
+            | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+me=${{ github.run_id }}
+live=[r for r in d.get('workflow_runs',[]) if r['id']!=me and r['status'] in ('queued','in_progress')]
+print(len(live))
+")
+          if [ "$LIVE" -gt 0 ]; then echo "CHAIN-SKIP: $LIVE live sibling(s) will chain — one-chain law"; exit 0; fi
+          sleep 780   # ~13min — total tick interval ≈ 15min
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type":"agent9-tick","client_payload":{"from":"${{ github.run_id }}"}}')
+          echo "dispatch http=$code"
+          [ "$code" = "204" ] || { echo "chain-next failed — revivers: cron + manual dispatch"; exit 1; }
