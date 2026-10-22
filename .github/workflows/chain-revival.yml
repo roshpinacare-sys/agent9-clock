@@ -21,13 +21,13 @@
 #   and takes no action — self-limiting by construction
 # - the ONE-CHAIN law inside clock.yml absorbs any racing duplicate dispatch
 # - this workflow's own concurrency group serializes revival checks
-# - cron every 20min IS the rate limit; a healthy chain costs 2 API reads/20min
+# - cron (9,29,49 off-boundary, t55s) IS the rate limit; a healthy chain costs 2 API reads/20min
 
 name: chain-revival
 
 on:
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "9,29,49 * * * *"   # t55s: off the 0/20/40 boundary — measured silent 4h on-boundary
   workflow_dispatch:
 
 permissions:
