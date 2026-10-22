@@ -61,26 +61,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # artery-pacer proven law: only a healthy beat begets a successor.
-          # A failed beat stops the chain here LOUDLY — cron + manual dispatch
+          # A failed beat stops the chain here LOUDLY - cron + manual dispatch
           # are the revivers (no runaway loops on defects).
-          # ONE-CHAIN LAW: if a live sibling (queued/running) exists — e.g. a
-          # scheduled revival — let IT chain. Schedule fires can never multiply
+          # ONE-CHAIN LAW: if a live sibling (queued/running) exists - e.g. a
+          # scheduled revival - let IT chain. Schedule fires can never multiply
           # the chain; the invariant "exactly one live chain" self-corrects.
+          # (t55l bug-a: inline python at column 1 dedented the YAML block
+          # scalar and killed the parse - jq one-liner keeps all lines indented.)
           LIVE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=8" \
-            | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-me=${{ github.run_id }}
-live=[r for r in d.get('workflow_runs',[]) if r['id']!=me and r['status'] in ('queued','in_progress')]
-print(len(live))
-")
-          if [ "$LIVE" -gt 0 ]; then echo "CHAIN-SKIP: $LIVE live sibling(s) will chain — one-chain law"; exit 0; fi
-          sleep 780   # ~13min — total tick interval ≈ 15min
+            | jq '[.workflow_runs[] | select(.id != ${{ github.run_id }} and (.status == "queued" or .status == "in_progress"))] | length')
+          if [ "$LIVE" -gt 0 ]; then echo "CHAIN-SKIP: $LIVE live sibling(s) will chain - one-chain law"; exit 0; fi
+          sleep 780   # ~13min - total tick interval ~ 15min
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ github.repository }}/dispatches \
             -d '{"event_type":"agent9-tick","client_payload":{"from":"${{ github.run_id }}"}}')
           echo "dispatch http=$code"
-          [ "$code" = "204" ] || { echo "chain-next failed — revivers: cron + manual dispatch"; exit 1; }
+          [ "$code" = "204" ] || { echo "chain-next failed - revivers: cron + manual dispatch"; exit 1; }
